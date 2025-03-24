@@ -12,7 +12,7 @@ public class CustomSASParserListener extends SASParserBaseListener {
     private final ExpressionWriter writer;
     private final Map<String, List<String>> imports;
     private final List<String> variables = new ArrayList<>();
-    private final boolean usedDataType = true;
+    private  boolean putOn = false;
     private  int counter = -1;
 
     public CustomSASParserListener(ExpressionWriter writer, Map<String, List<String>> imports) {
@@ -98,6 +98,7 @@ public class CustomSASParserListener extends SASParserBaseListener {
                 String withBrackets = "{"+s+"}";
                 path = path.replaceAll(withAnd + "\\.", withBrackets).replace(withAnd + "\\s*", withBrackets);
             }
+            appendImports("pathlib", "Path");
             writer.append("Path(f'" + path + "').exists()").newlineAndIndent();
         } else if (ctx.getChild(3).getText().toLowerCase().contains("%sysget")) {
            writer.append("os.getenv(\"" +
@@ -173,6 +174,7 @@ public void enterCallStatement(SASParser.CallStatementContext ctx) {
     public void enterFunctionExpression(SASParser.FunctionExpressionContext ctx) {
         System.out.println("Entering LET statement: " + ctx.getText());
         if (ctx.getChild(0).getChild(0).getText().equalsIgnoreCase("put")) {
+            putOn = true;
             appendImports("datetime", "datetime");
             appendImports("datetime", "timedelta");
             String operator = ctx.getChild(0).getChild(2).getChild(0).getChild(0).getChild(1).getText();
@@ -180,7 +182,7 @@ public void enterCallStatement(SASParser.CallStatementContext ctx) {
             writer.append("datetime.fromtimestamp(int((datetime.fromtimestamp(int(datetime.strptime(" +
                     varName + ", \"%Y%m%d\").timestamp())) "+ operator + " timedelta(days = 1)).timestamp())).strftime(\"%Y%m%d\")");
         }
-        if (ctx.getChild(0).getChild(0).getText().equalsIgnoreCase("input")) {
+        if (!putOn && ctx.getChild(0).getChild(0).getText().equalsIgnoreCase("input")) {
             appendImports("datetime", "datetime");
             appendImports("datetime", "timedelta");
             String varName = ctx.getChild(0).getChild(2).getChild(0).getText().replaceAll("\"", "").replaceFirst("&", "").toUpperCase();
@@ -194,6 +196,14 @@ public void enterCallStatement(SASParser.CallStatementContext ctx) {
     }
 
     @Override
+    public void exitFunctionExpression(SASParser.FunctionExpressionContext ctx) {
+        System.out.println("Entering LET statement: " + ctx.getText());
+        if (ctx.getChild(0).getChild(0).getText().equalsIgnoreCase("put")) {
+            putOn = false;
+        }
+    }
+
+    @Override
     public void enterIncludeStatement(SASParser.IncludeStatementContext ctx) {
         System.out.println("Entering LET statement: " + ctx.getText());
         String path = ctx.getChild(1).getText().replaceAll("'", "").replaceAll("\"", "");
@@ -202,7 +212,7 @@ public void enterCallStatement(SASParser.CallStatementContext ctx) {
         appendImports("importlib.util", null);
         String[] names = path.split("[\\\\/]");
         String name = names[names.length - 1].split("\\.")[0];
-        writer.append(name + "_file_path").appendAssignment().append(String.join(".", paths)).newlineAndIndent();
+        writer.append(name + "_file_path").appendAssignment().appendSingleQuote().append(String.join(".", paths)).appendSingleQuote().newlineAndIndent();
         variables.add(name + "_file_path");
         variables.add(name + "_spec");
         writer.append(name + "_spec = importlib.util.spec_from_file_location(\"module\", " + name + "_file_path)").newlineAndIndent();
@@ -214,9 +224,41 @@ public void enterCallStatement(SASParser.CallStatementContext ctx) {
     public void enterMacroDefStatement(SASParser.MacroDefStatementContext ctx) {
         System.out.println("Entering LET statement: " + ctx.getText());
         String methodName = ctx.getChild(1).getText().replaceAll("'", "");
+        writer.newlineAndIndent();
+        writer.append("def ").append(methodName).append("(");
+        if (ctx.getChild(2).getText().equalsIgnoreCase(";")) {
+            writer.append("):").newlineAndIndent();
+            writer.begin();
+            return;
+        }
+        int paramCount = ctx.getChild(3).getChildCount();
+        for (int i = 0; i < paramCount; i++) {
+            ParseTree tree = ctx.getChild(3).getChild(i);
+            if (i%2 == 0) {
+                writer.append(tree.getChild(0).getText());
+//                if (tree.getChildCount() <= 2) {
+//                    writer.append("None");
+//                } else {
+//                    writer.append(tree.getChild(2).getText());
+//                }
+            } else {
+                if (i != paramCount - 1) {
+                    writer.append(tree.getText()).appendSpace();
+                }
+            }
+        }
+        writer.append("):").newlineAndIndent();
+        writer.begin();
+       // writer.append(")").newlineAndIndent();
+    }
+
+    @Override
+    public void enterMacroCall(SASParser.MacroCallContext ctx) {
+        System.out.println("Entering LET statement: " + ctx.getText());
+        String methodName = ctx.getChild(1).getText().replaceAll("'", "");
         writer.append(methodName).append("(");
         if (ctx.getChild(2).getText().equalsIgnoreCase(";")) {
-            writer.append(")").newlineAndIndent();
+            writer.append(")");
             return;
         }
         int paramCount = ctx.getChild(3).getChildCount();
@@ -227,7 +269,7 @@ public void enterCallStatement(SASParser.CallStatementContext ctx) {
                 if (tree.getChildCount() <= 2) {
                     writer.append("None");
                 } else {
-                    writer.append(tree.getChild(2).getText());
+                    vv(tree.getChild(2).getText());
                 }
             } else {
                 if (i != paramCount - 1) {
@@ -235,14 +277,30 @@ public void enterCallStatement(SASParser.CallStatementContext ctx) {
                 }
             }
         }
-        writer.append(")").newlineAndIndent();
+         writer.append(")").newlineAndIndent();
     }
-//
-//    @Override
-//    public void exitMacroDefStatement(SASParser.MacroDefStatementContext ctx) {
-//        System.out.println("Entering LET statement: " + ctx.getText());
-//        writer.append(")");
-//    }
+
+    private void vv(String var) {
+        String varWithoutAnd = var.replaceFirst("&", "");
+        if (variables.contains(varWithoutAnd)) {
+            writer.append(varWithoutAnd);
+        } else {
+            for (String s : variables) {
+                String withAnd = "&"+s;
+                String withBrackets = "{"+s+"}";
+                var = var.replaceAll(withAnd + "\\.", withBrackets).replace(withAnd + "\\s*", withBrackets);
+            }
+            writer.append("f'" + var +"'");
+        }
+    }
+
+    @Override
+    public void exitMacroDefStatement(SASParser.MacroDefStatementContext ctx) {
+        System.out.println("Entering LET statement: " + ctx.getText());
+       writer.newlineAndIndent();
+        writer.end();
+
+    }
 
 //    @Override
 //    public void exitFunctionExpression(SASParser.FunctionExpressionContext ctx) {
@@ -280,12 +338,16 @@ public void enterCallStatement(SASParser.CallStatementContext ctx) {
         } else {
             writer.append(conditionTree.getChild(2).getText().replace("&", ""));
         }
-        writer.append(":").newline();
-
-        writer.append("    ").append("file_path = f\'{SRC_LANDING}/{in_dataset}-{RUNDATE}.dat'").newlineAndIndent();
-        writer.append("    ").append("df = spark.read.csv(file_path, header=True, inferSchema=True)").newlineAndIndent();
+        writer.append(":").newlineAndIndent();
+        writer.begin();
+        appendImports("pyspark.shell", "spark");
+        writer.append("file_path = f'{SRC_LANDING}/{in_dataset}-{RUNDATE}.dat'").newlineAndIndent();
+        writer.append("df = spark.read.csv(file_path, header=True, inferSchema=True)").newlineAndIndent();
+        writer.end();
         writer.append("else:").newlineAndIndent();
-        writer.append("    ").append("df = spark.read.format(\"sas7bdat\").load(f\"{INLIB}/{in_dataset}\")").newlineAndIndent();
+        writer.begin();
+        writer.append("df = spark.read.format(\"sas7bdat\").load(f\"{INLIB}/{in_dataset}\")").newlineAndIndent();
+        writer.end();
        // writer.append("    ").append("df = df.withColumnRenamed(\"ACCT\", \"ACCT_NBR\")").newlineAndIndent();
 //        writer.append(ctx.getChild(1).getText() + " = os.getenv(\"" +
 //                ctx.getChild(3).getChild(0).getChild(2).getText() + "\")").newlineAndIndent();
